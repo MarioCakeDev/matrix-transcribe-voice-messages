@@ -74,7 +74,8 @@ async def main():
         sync_store=crypto_store,
         state_store=state_store,
     )
-    client.access_token = login_client.access_token
+    client.api.token = login_client.api.token
+    client.api.base_url = login_client.api.base_url.__class__(config.homeserver)
 
     crypto = OlmMachine(client, crypto_store, state_store)
     await crypto.load()
