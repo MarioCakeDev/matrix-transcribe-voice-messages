@@ -7,7 +7,7 @@ from aiohttp import ClientSession
 from mautrix.client import Client, InternalEventType
 from mautrix.crypto import OlmMachine
 from mautrix.crypto.store import PgCryptoStore, PgCryptoStateStore
-from mautrix.types import EventType, LoginType, MatrixUserIdentifier
+from mautrix.types import EventType, LoginType, MatrixUserIdentifier, MembershipState
 from mautrix.util.async_db import Database
 
 from src.config import Config
@@ -99,6 +99,16 @@ async def main():
     @client.on(EventType.ROOM_MESSAGE)
     async def on_message(evt):
         await bot.handle_message(evt)
+
+    @client.on(EventType.MEMBER)
+    async def on_member(evt):
+        if evt.content.membership == MembershipState.INVITE and evt.state_key == config.user_id:
+            logger.info("Invited to room %s, joining...", evt.room_id)
+            try:
+                await client.join_room(evt.room_id)
+                logger.info("Joined room %s", evt.room_id)
+            except Exception:
+                logger.exception("Failed to join room %s", evt.room_id)
 
     stop_event = asyncio.Event()
 
