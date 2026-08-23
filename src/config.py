@@ -11,6 +11,7 @@ class Config:
     device_id: str | None
     store_path: str
     recovery_key: str | None
+    mas_url: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -28,6 +29,10 @@ class Config:
         if not homeserver.startswith(("http://", "https://")):
             homeserver = f"https://{homeserver}"
 
+        mas_url = os.environ.get("MATRIX_MAS_URL")
+        if mas_url and not mas_url.startswith(("http://", "https://")):
+            mas_url = f"https://{mas_url}"
+
         return cls(
             homeserver=homeserver,
             user_id=os.environ["MATRIX_USER_ID"],
@@ -36,4 +41,5 @@ class Config:
             device_id=os.environ.get("MATRIX_DEVICE_ID"),
             store_path=os.environ.get("STORE_PATH", "./store"),
             recovery_key=os.environ.get("MATRIX_RECOVERY_KEY"),
+            mas_url=mas_url,
         )

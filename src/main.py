@@ -44,7 +44,7 @@ async def main():
 
     state_store = PgCryptoStateStore(db)
 
-    mas_url = getattr(config, "mas_url", None) or config.homeserver.replace("matrix.", "mas.")
+    mas_url = config.mas_url or config.homeserver.replace("matrix.", "mas.")
 
     # Login via MAS using raw aiohttp (Synapse delegates auth to MAS)
     async with ClientSession() as session:
