@@ -45,7 +45,7 @@ async def main():
 
     mas_url = getattr(config, "mas_url", None) or config.homeserver.replace("matrix.", "mas.")
 
-    login_client = Client(
+    client = Client(
         base_url=mas_url,
         mxid=config.user_id,
         device_id=config.device_id,
@@ -53,7 +53,7 @@ async def main():
         state_store=state_store,
     )
 
-    await login_client.login(
+    await client.login(
         login_type=LoginType.PASSWORD,
         identifier=MatrixUserIdentifier(user=config.user_id.split(":")[0][1:]),
         password=config.password,
@@ -64,18 +64,10 @@ async def main():
         "Logged in via %s as %s (device_id=%s)",
         mas_url,
         config.user_id,
-        login_client.device_id,
+        client.device_id,
     )
 
-    client = Client(
-        base_url=config.homeserver,
-        mxid=config.user_id,
-        device_id=login_client.device_id,
-        sync_store=crypto_store,
-        state_store=state_store,
-    )
-    client.api.token = login_client.api.token
-    client.api.base_url = login_client.api.base_url.__class__(config.homeserver)
+    client.api.base_url = client.api.base_url.__class__(config.homeserver)
 
     crypto = OlmMachine(client, crypto_store, state_store)
     await crypto.load()
