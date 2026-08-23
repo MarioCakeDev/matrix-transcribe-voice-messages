@@ -3,7 +3,7 @@ import logging
 import signal
 
 from dotenv import load_dotenv
-from yarl import URL as YarlURL
+from aiohttp import ClientSession
 from mautrix.client import Client, InternalEventType
 from mautrix.crypto import OlmMachine
 from mautrix.crypto.store import PgCryptoStore, PgCryptoStateStore
@@ -46,30 +46,40 @@ async def main():
 
     mas_url = getattr(config, "mas_url", None) or config.homeserver.replace("matrix.", "mas.")
 
+    # Login via MAS using raw aiohttp (Synapse delegates auth to MAS)
+    async with ClientSession() as session:
+        login_payload = {
+            "type": "m.login.password",
+            "identifier": {
+                "type": "m.id.user",
+                "user": config.user_id.split(":")[0][1:],
+            },
+            "password": config.password,
+        }
+        if config.device_id:
+            login_payload["device_id"] = config.device_id
+
+        async with session.post(
+            f"{mas_url}/_matrix/client/v3/login", json=login_payload
+        ) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                raise RuntimeError(f"MAS login failed ({resp.status}): {body}")
+            login_data = await resp.json()
+
+    access_token = login_data["access_token"]
+    device_id = login_data.get("device_id")
+    logger.info("Logged in via %s (device_id=%s)", mas_url, device_id)
+
+    # Create client pointing at Synapse
     client = Client(
-        base_url=mas_url,
+        base_url=config.homeserver,
         mxid=config.user_id,
-        device_id=config.device_id,
+        token=access_token,
+        device_id=device_id,
         sync_store=crypto_store,
         state_store=state_store,
     )
-
-    await client.login(
-        login_type=LoginType.PASSWORD,
-        identifier=MatrixUserIdentifier(user=config.user_id.split(":")[0][1:]),
-        password=config.password,
-        device_id=config.device_id,
-    )
-
-    logger.info(
-        "Logged in via %s as %s (device_id=%s)",
-        mas_url,
-        config.user_id,
-        client.device_id,
-    )
-
-    client.api.base_url = YarlURL(config.homeserver)
-    logger.info("Switched base_url from %s to %s", mas_url, config.homeserver)
 
     crypto = OlmMachine(client, crypto_store, state_store)
     await crypto.load()
