@@ -3,6 +3,7 @@ import logging
 import signal
 
 from dotenv import load_dotenv
+from yarl import URL as YarlURL
 from mautrix.client import Client, InternalEventType
 from mautrix.crypto import OlmMachine
 from mautrix.crypto.store import PgCryptoStore, PgCryptoStateStore
@@ -67,7 +68,8 @@ async def main():
         client.device_id,
     )
 
-    client.api.base_url = client.api.base_url.__class__(config.homeserver)
+    client.api.base_url = YarlURL(config.homeserver)
+    logger.info("Switched base_url from %s to %s", mas_url, config.homeserver)
 
     crypto = OlmMachine(client, crypto_store, state_store)
     await crypto.load()
