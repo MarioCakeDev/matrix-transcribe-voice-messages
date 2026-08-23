@@ -43,9 +43,18 @@ class MatrixTranscribeBot:
 
         logger.info("Voice message detected in %s from %s", event.room_id, event.sender)
 
+        raw = content.serialize()
+        logger.info("Voice message content keys: %s", list(raw.keys()))
+
         mxc_url = content.url
+        if not mxc_url and hasattr(content, 'file') and content.file:
+            mxc_url = content.file.url
         if not mxc_url:
-            logger.warning("No URL in voice message content")
+            file_info = raw.get("file")
+            if file_info and isinstance(file_info, dict):
+                mxc_url = file_info.get("url")
+        if not mxc_url:
+            logger.warning("No URL in voice message content: %s", raw)
             return
 
         try:
