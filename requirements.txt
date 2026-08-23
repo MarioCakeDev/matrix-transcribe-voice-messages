@@ -1,3 +1,5 @@
 unpaddedbase64
 pycryptodome
 base58
+aiosqlite
+python-olm
