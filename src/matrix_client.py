@@ -47,7 +47,6 @@ class MatrixTranscribeBot:
         logger.info("Voice message detected in %s from %s", event.room_id, event.sender)
 
         raw = content.serialize()
-        logger.info("Voice message content keys: %s", list(raw.keys()))
 
         encrypted_file = content.file
         if not encrypted_file:
@@ -68,12 +67,9 @@ class MatrixTranscribeBot:
                 logger.info("Decrypting encrypted voice message")
                 file_obj = encrypted_file if not isinstance(encrypted_file, dict) else type("Obj", (), encrypted_file)()
                 key_b64 = file_obj.key.key
-                logger.info("Key type=%s, k=%s", type(file_obj.key), key_b64[:20] if key_b64 else "EMPTY")
                 key_bytes = base64.urlsafe_b64decode(key_b64 + "==")
                 iv_str = file_obj.iv if isinstance(file_obj.iv, str) else ""
-                logger.info("IV=%s len=%d", iv_str[:20], len(iv_str))
                 iv_bytes = base64.urlsafe_b64decode(iv_str + "==")
-                logger.info("Key bytes=%d, IV bytes=%d", len(key_bytes), len(iv_bytes))
                 cipher = AES.new(key_bytes, AES.MODE_CTR, nonce=iv_bytes[:8], initial_value=iv_bytes[8:])
                 audio_data = cipher.decrypt(audio_data)
                 logger.info("Decrypted %d bytes", len(audio_data))

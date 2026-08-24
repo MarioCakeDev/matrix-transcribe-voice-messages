@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import signal
+from pathlib import Path
 
 from dotenv import load_dotenv
 from aiohttp import ClientSession
@@ -15,6 +17,8 @@ from src.matrix_client import MatrixTranscribeBot
 from src.transcriber import Transcriber
 
 logger = logging.getLogger(__name__)
+
+DEVICE_ID_FILE = "device_id"
 
 
 async def main():
@@ -46,6 +50,13 @@ async def main():
 
     mas_url = config.mas_url or config.homeserver.replace("matrix.", "mas.")
 
+    # Load persisted device_id if available
+    device_id_file = Path(config.store_path) / DEVICE_ID_FILE
+    device_id = config.device_id
+    if not device_id and device_id_file.exists():
+        device_id = device_id_file.read_text().strip()
+        logger.info("Loaded persisted device_id: %s", device_id)
+
     # Login via MAS using raw aiohttp (Synapse delegates auth to MAS)
     async with ClientSession() as session:
         login_payload = {
@@ -56,8 +67,8 @@ async def main():
             },
             "password": config.password,
         }
-        if config.device_id:
-            login_payload["device_id"] = config.device_id
+        if device_id:
+            login_payload["device_id"] = device_id
 
         async with session.post(
             f"{mas_url}/_matrix/client/v3/login", json=login_payload
@@ -69,6 +80,10 @@ async def main():
 
     access_token = login_data["access_token"]
     device_id = login_data.get("device_id")
+
+    # Persist device_id for next restart
+    os.makedirs(config.store_path, exist_ok=True)
+    device_id_file.write_text(device_id or "")
     logger.info("Logged in via %s (device_id=%s)", mas_url, device_id)
 
     # Create client pointing at Synapse
