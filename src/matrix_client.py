@@ -38,6 +38,12 @@ class MatrixTranscribeBot:
             return
 
         content = event.content
+        raw = content.serialize() if hasattr(content, 'serialize') else {}
+        msgtype = raw.get("msgtype", "unknown")
+        logger.info("Message from %s: msgtype=%s, has_file=%s, has_url=%s",
+                     event.sender, msgtype,
+                     "file" in raw, "url" in raw)
+
         if not isinstance(content, MediaMessageEventContent):
             return
 
@@ -82,11 +88,13 @@ class MatrixTranscribeBot:
 
         try:
             text = await self.transcriber.transcribe(audio_data, filename)
+            logger.info("Transcription result: %s", text[:100] if text else "empty")
             await self._send_reply(event.room_id, f"Transcription:\n{text}", event.event_id)
+            logger.info("Reply sent to %s", event.room_id)
         except Exception as e:
-            logger.error("Failed to transcribe audio: %s", e)
+            logger.error("Failed to transcribe/send: %s", e, exc_info=True)
             try:
-                await self._send_reply(event.room_id, f"Failed to transcribe audio: {e}", event.event_id)
+                await self._send_reply(event.room_id, f"Failed to transcribe: {e}", event.event_id)
             except Exception:
                 logger.exception("Failed to send error reply")
 
