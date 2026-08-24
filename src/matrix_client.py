@@ -1,6 +1,9 @@
+import base64
+import hashlib
 import logging
 from typing import TYPE_CHECKING
 
+from Crypto.Cipher import AES
 from mautrix.types import (
     MediaMessageEventContent,
     MessageEvent,
@@ -46,21 +49,33 @@ class MatrixTranscribeBot:
         raw = content.serialize()
         logger.info("Voice message content keys: %s", list(raw.keys()))
 
+        encrypted_file = content.file
+        if not encrypted_file:
+            file_raw = raw.get("file")
+            if file_raw and isinstance(file_raw, dict):
+                encrypted_file = file_raw
+
         mxc_url = content.url
-        if not mxc_url and hasattr(content, 'file') and content.file:
-            mxc_url = content.file.url
-        if not mxc_url:
-            file_info = raw.get("file")
-            if file_info and isinstance(file_info, dict):
-                mxc_url = file_info.get("url")
+        if not mxc_url and encrypted_file:
+            mxc_url = encrypted_file.get("url") if isinstance(encrypted_file, dict) else getattr(encrypted_file, "url", None)
         if not mxc_url:
             logger.warning("No URL in voice message content: %s", raw)
             return
 
         try:
             audio_data = await self.client.download_media(mxc_url)
+            if encrypted_file:
+                logger.info("Decrypting encrypted voice message")
+                file_obj = encrypted_file if not isinstance(encrypted_file, dict) else type("Obj", (), encrypted_file)()
+                key_b64 = file_obj.key["k"] if isinstance(file_obj.key, dict) else file_obj.key.get("k", "")
+                key_bytes = base64.urlsafe_b64decode(key_b64 + "==")
+                iv_b64 = file_obj.iv if isinstance(file_obj.iv, str) else file_obj.iv
+                iv_bytes = base64.urlsafe_b64decode(iv_b64 + "==")
+                cipher = AES.new(key_bytes, AES.MODE_CTR, nonce=iv_bytes[:8], initial_value=iv_bytes[8:])
+                audio_data = cipher.decrypt(audio_data)
+                logger.info("Decrypted %d bytes", len(audio_data))
         except Exception as e:
-            logger.error("Failed to download audio: %s", e)
+            logger.error("Failed to download/decrypt audio: %s", e)
             await self._send_reply(event.room_id, f"Failed to download audio: {e}", event.event_id)
             return
 
