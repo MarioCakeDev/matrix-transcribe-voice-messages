@@ -67,9 +67,8 @@ class MatrixTranscribeBot:
             if encrypted_file:
                 logger.info("Decrypting encrypted voice message")
                 file_obj = encrypted_file if not isinstance(encrypted_file, dict) else type("Obj", (), encrypted_file)()
-                key_data = file_obj.key if isinstance(file_obj.key, dict) else file_obj.key
-                key_b64 = key_data.get("k", "") if isinstance(key_data, dict) else ""
-                logger.info("Key type=%s, k=%s", type(key_data), key_b64[:20] if key_b64 else "EMPTY")
+                key_b64 = file_obj.key.key
+                logger.info("Key type=%s, k=%s", type(file_obj.key), key_b64[:20] if key_b64 else "EMPTY")
                 key_bytes = base64.urlsafe_b64decode(key_b64 + "==")
                 iv_str = file_obj.iv if isinstance(file_obj.iv, str) else ""
                 logger.info("IV=%s len=%d", iv_str[:20], len(iv_str))
