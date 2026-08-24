@@ -1,116 +1,153 @@
-# matrix-transcribe-voice-messages
+<p align="center">
+  <img src="https://upload.wikimedia.org/wikipedia/commons/7/7c/Matrix_icon.svg" alt="Matrix" width="80" height="80">
+  <h1 align="center">Matrix Voice Transcriber</h1>
+  <p align="center">
+    Automatically transcribe voice messages in your Matrix rooms — <strong>including E2EE rooms</strong><br>
+    Works with any OpenAI Whisper-compatible API (Parakeet, whisper.cpp, OpenAI, etc.)
+  </p>
+</p>
 
-Fork of [florianherrengt/matrix-transcribe-voice-messages](https://github.com/florianherrengt/matrix-transcribe-voice-messages) with fixes and new features for self-hosted Matrix deployments using MAS (Matrix Authentication Service) and E2EE rooms.
+<p align="center">
+  <a href="https://github.com/MarioCakeDev/matrix-transcribe-voice-messages/actions"><img src="https://github.com/MarioCakeDev/matrix-transcribe-voice-messages/actions/workflows/build.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/docker/pulls/mariocakedev/matrix-transcribe-voice-messages?label=docker%20pulls" alt="Docker Pulls">
+  <img src="https://img.shields.io/docker/image-size/mariocakedev/matrix-transcribe-voice-messages?label=image%20size" alt="Image Size">
+  <img src="https://img.shields.io/github/license/MarioCakeDev/matrix-transcribe-voice-messages" alt="License">
+</p>
 
-## What's Changed
+---
 
-- **MAS login support** — Logs in via Matrix Authentication Service, then connects to Synapse. Required for homeservers using MAS for auth.
-- **End-to-End Encryption** — Decrypts encrypted voice messages (AES-256-CTR) before sending to Whisper.
-- **Auto-join on invite** — Bot automatically joins rooms when invited.
-- **Device ID persistence** — Saves `device_id` to maintain crypto state across restarts.
-- **Notice replies** — Sends transcriptions as `m.notice` to avoid bridges re-bridging bot messages.
-- **Comprehensive logging** — Detailed logs for debugging message detection, download, decryption, and transcription.
-- **Fixed dependencies** — Adds `unpaddedbase64`, `pycryptodome`, `base58`, `aiosqlite`, `python-olm`.
+This bot listens for voice messages in your Matrix rooms, transcribes them using any Whisper-compatible ASR server, and replies with the text. Fully compatible with **end-to-end encrypted rooms**.
 
-## Prerequisites
+## Fork Changes
 
-### Whisper Server
+This is a fork of [florianherrengt/matrix-transcribe-voice-messages](https://github.com/florianherrengt/matrix-transcribe-voice-messages) with the following changes:
 
-Run a Whisper server (e.g., [hwdsl2/whisper-server](https://github.com/hwdsl2/docker-whisper)):
+- **Matrix Authentication Service (MAS) support** — the original only supports direct Synapse login. This fork logs in via MAS, then connects to Synapse. Required for homeservers using MAS for authentication.
+- **E2EE media decryption** — downloads and decrypts encrypted voice message attachments (AES-256-CTR) before sending to Whisper.
+- **Auto-join on invite** — bot automatically joins rooms when invited (via `m.room_member` event handler).
+- **Notice replies** — transcriptions are sent as `m.notice` instead of `m.text` to prevent bridges (e.g., Signal) from re-bridging bot messages back to the upstream platform.
+- **Device ID persistence** — saves `device_id` to a file to maintain E2EE crypto state across restarts.
+- **Comprehensive logging** — detailed logs for message detection, download, decryption, and transcription debugging.
+- **Fixed missing dependencies** — adds `unpaddedbase64`, `pycryptodome`, `base58`, `aiosqlite`, `python-olm` that cause `ModuleNotFoundError` on startup in the original.
 
-```yaml
-whisper:
-  image: hwdsl2/whisper-server:latest
-  environment:
-    WHISPER_MODEL: medium
-    WHISPER_LANGUAGE: ''  # Empty = auto-detect language per segment
-    WHISPER_API_KEY: ''
-  ports:
-    - '9000:9000'
+**All changes in this fork were generated entirely by AI (opencode) and not reviewed by a human.** The AI only implemented what was requested by the user.
+
+## Features
+
+- **E2EE support** — works in encrypted rooms using matrix-nio + libolm
+- **Auto-join** — invite the bot to a room and it joins automatically
+- **Auto-detect language** — no configuration needed, works with any language
+- **Reply to original** — transcriptions are posted as replies to the voice message
+- **Lightweight** — multi-stage Docker image, runs on Raspberry Pi (arm64 + amd64)
+- **One-command deploy** — just Docker and a `.env` file
+
+## Quick Start
+
+### 1. Create a Matrix account for the bot
+
+Create a regular Matrix account for the bot (e.g. `@transcribe:your-server.com`).
+
+### 2. Create a `.env` file
+
+```bash
+cp .env.example .env
 ```
 
-- `WHISPER_LANGUAGE: ''` — Auto-detects language (supports mixed German/Russian/English).
-- `WHISPER_MODEL: medium` — Better multilingual accuracy than `small`.
-- `WHISPER_API_KEY: ''` — Disables API key auth.
+Edit `.env`:
 
-### Matrix Bot Account
-
-1. Create a bot account on your homeserver (e.g., `@transcribe-bot:your.domain`).
-2. If using MAS, note the MAS URL and Synapse URL separately.
-
-## Docker Compose
-
-```yaml
-services:
-  transcribe-bot:
-    image: ghcr.io/mariocakedev/matrix-transcribe-voice-messages:latest
-    environment:
-      MATRIX_HOMESERVER: 'https://matrix.your.domain'     # Synapse URL
-      MATRIX_MAS_URL: 'https://mas.your.domain'           # MAS URL (if using MAS)
-      MATRIX_USER_ID: '@transcribe-bot:your.domain'
-      MATRIX_PASSWORD: 'your-bot-password'
-      PARAKEET_URL: 'http://whisper:9000'                 # Whisper server URL
-    volumes:
-      - transcribe-store:/app/store
-    depends_on:
-      - whisper
-
-  whisper:
-    image: hwdsl2/whisper-server:latest
-    environment:
-      WHISPER_MODEL: medium
-      WHISPER_LANGUAGE: ''
-      WHISPER_API_KEY: ''
-    volumes:
-      - whisper-data:/home/whisper
-
-volumes:
-  transcribe-store:
-  whisper-data:
+```env
+MATRIX_HOMESERVER=https://your-homeserver.com
+MATRIX_USER_ID=@transcribe:your-homeserver.com
+MATRIX_PASSWORD=your-bot-password
+PARAKEET_URL=http://your-whisper-server:5092
 ```
 
-## Environment Variables
+### 3. Run with Docker Compose
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `MATRIX_HOMESERVER` | Yes | Synapse server URL (e.g., `https://matrix.your.domain`) |
-| `MATRIX_USER_ID` | Yes | Bot's Matrix user ID (e.g., `@transcribe-bot:your.domain`) |
-| `MATRIX_PASSWORD` | Yes | Bot's password |
-| `PARAKEET_URL` | Yes | Whisper server URL (e.g., `http://whisper:9000`) |
-| `MATRIX_MAS_URL` | No | MAS URL if using Matrix Authentication Service |
-| `MATRIX_DEVICE_ID` | No | Persist device ID across restarts (auto-generated if not set) |
-| `STORE_PATH` | No | Path for crypto store (default: `./store`) |
+```bash
+docker compose up -d
+```
+
+Or run directly:
+
+```bash
+docker run -d \
+  --name matrix-transcribe \
+  --env-file .env \
+  -v transcribe-store:/app/store \
+  ghcr.io/mariocakedev/matrix-transcribe-voice-messages
+```
+
+### 4. Invite the bot to a room
+
+Invite `@transcribe:your-homeserver.com` to any room. The bot will auto-join and start transcribing voice messages.
+
+## Whisper / ASR Server
+
+This bot works with **any OpenAI Whisper-compatible API**. Just point `PARAKEET_URL` at your server:
+
+- **[Parakeet](https://github.com/achetronic/parakeet)** — Fast, CPU-only, Whisper-compatible server using NVIDIA Parakeet TDT 0.6B (what this project was tested with)
+- **[whisper.cpp](https://github.com/ggerganov/whisper.cpp)** — C++ Whisper implementation with a compatible server
+- **[hwdsl2/whisper-server](https://github.com/hwdsl2/docker-whisper)** — Dockerized Whisper server with auto-detect language support
+- **OpenAI API** — Just point `PARAKEET_URL` to `https://api.openai.com`
+
+## Configuration
+
+| Variable            | Required | Default   | Description                       |
+| ------------------- | -------- | --------- | --------------------------------- |
+| `MATRIX_HOMESERVER` | Yes      | —         | Your Matrix homeserver URL (Synapse) |
+| `MATRIX_USER_ID`    | Yes      | —         | Bot's Matrix user ID              |
+| `MATRIX_PASSWORD`   | Yes      | —         | Bot's password                    |
+| `MATRIX_MAS_URL`    | No       | —         | MAS URL if using Matrix Authentication Service |
+| `MATRIX_DEVICE_ID`  | No       | Auto      | Device ID for session persistence |
+| `PARAKEET_URL`      | Yes      | —         | Whisper-compatible API base URL   |
+| `STORE_PATH`        | No       | `./store` | Path for E2EE key storage         |
 
 ## How It Works
 
-1. Bot logs in via MAS (or directly to Synapse if no MAS).
-2. Syncs with the homeserver, listening for `m.audio` messages.
-3. When a voice message is detected:
-   - Downloads the encrypted file from the Matrix content repository.
-   - Decrypts using AES-256-CTR (if E2EE).
-   - Sends audio to Whisper for transcription.
-   - Replies with the transcription as `m.notice` (avoids bridge re-bridging).
-
-## Supported Audio Formats
-
-Whisper supports: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, flac.
-
-## Language Support
-
-Whisper auto-detects the language per audio segment. Supports mixed-language voice messages (e.g., German + Russian + English in the same message).
-
-## Usage
-
-1. Invite `@transcribe-bot:your.domain` to a room.
-2. Send a voice message.
-3. Bot replies with the transcription.
-
-## Building
-
-```bash
-docker build -t matrix-transcribe-voice-messages .
+```
+Voice message sent in Matrix room
+         │
+         ▼
+  Bot receives event
+  (RoomMessageAudio / RoomEncryptedAudio)
+         │
+         ▼
+  Download & decrypt audio
+  (handles E2EE via libolm)
+         │
+         ▼
+  Send to Whisper API
+  (POST /v1/audio/transcriptions)
+         │
+         ▼
+  Reply with transcription
+  (as m.notice reply to original message)
 ```
 
-## Credits
+## Running from Source
 
-Based on [florianherrengt/matrix-transcribe-voice-messages](https://github.com/florianherrengt/matrix-transcribe-voice-messages).
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m src.main
+```
+
+> **Note:** Requires `libolm` installed on your system for E2EE support. On macOS: `brew install libolm`. On Debian/Ubuntu: `apt install libolm-dev`.
+
+## Architecture
+
+Built with [matrix-nio](https://github.com/matrix-nio/matrix-nio), the most mature Python Matrix SDK with first-class E2EE support. The bot maintains a persistent sync connection, automatically decrypts messages using stored Olm/Megolm keys, and handles device verification.
+
+```
+src/
+├── main.py          # Entry point, MAS login, sync loop, E2EE setup, auto-join
+├── config.py        # Environment variable configuration (includes MAS URL)
+├── matrix_client.py # Voice detection, download, decrypt, E2EE media, reply
+└── transcriber.py   # Whisper API client
+```
+
+## License
+
+MIT
