@@ -102,5 +102,6 @@ class MatrixTranscribeBot:
         await self.client.send_text(
             room_id,
             text=text,
+            msgtype=MessageType.NOTICE,
             relates_to=RelatesTo(in_reply_to={"event_id": reply_to_event_id}),
         )
