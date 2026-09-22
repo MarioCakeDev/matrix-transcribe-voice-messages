@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 from pathlib import Path
+from typing import NoReturn
 
 from dotenv import load_dotenv
 from aiohttp import ClientSession
@@ -13,7 +14,7 @@ from mautrix.types import EventType, LoginType, MatrixUserIdentifier, Membership
 from mautrix.util.async_db import Database
 
 from src.config import Config
-from src.mas_login import MasLoginError, post_login_with_retry
+from src.mas_login import post_login_with_retry
 from src.matrix_client import MatrixTranscribeBot
 from src.transcriber import Transcriber
 
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 DEVICE_ID_FILE = "device_id"
 
 
-def _fail_fast(reason: str) -> None:
+def _fail_fast(reason: str) -> NoReturn:
     logger.critical("Fatal: %s", reason)
     logging.shutdown()
     os._exit(1)
@@ -87,10 +88,10 @@ async def main():
                 max_delay=config.mas_login_max_delay,
                 timeout=config.mas_login_timeout,
             )
-        except MasLoginError as exc:
-            _fail_fast(f"MAS login failed after retries: {exc}")
+            access_token = login_data["access_token"]
+        except Exception as exc:
+            _fail_fast(f"MAS login failed after retries: {exc!r}")
 
-    access_token = login_data["access_token"]
     device_id = login_data.get("device_id")
 
     # Persist device_id for next restart

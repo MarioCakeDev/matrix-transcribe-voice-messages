@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import aiohttp
 import pytest
@@ -7,12 +8,16 @@ from src.mas_login import MasLoginError, MasLoginPermanentError, post_login_with
 
 
 class FakeResponse:
-    def __init__(self, status, json_body=None, text_body=""):
+    def __init__(self, status, json_body=None, text_body="", json_exc=None, headers=None):
         self.status = status
         self._json = {} if json_body is None else json_body
         self._text = text_body
+        self._json_exc = json_exc
+        self.headers = headers or {}
 
     async def json(self):
+        if self._json_exc is not None:
+            raise self._json_exc
         return self._json
 
     async def text(self):
@@ -224,3 +229,131 @@ def test_single_attempt_does_not_sleep():
 
     assert len(session.calls) == 1
     assert sleeps == []
+
+
+def test_malformed_json_200_is_retried_then_succeeds():
+    session = FakeSession(
+        [
+            FakeResponse(200, json_exc=json.JSONDecodeError("bad body", "not json", 0)),
+            FakeResponse(200, {"access_token": "tok"}),
+        ]
+    )
+    sleeps = []
+
+    result = asyncio.run(
+        post_login_with_retry(
+            session, "https://mas", {}, max_attempts=3, sleep=make_sleep(sleeps)
+        )
+    )
+
+    assert result == {"access_token": "tok"}
+    assert len(session.calls) == 2
+    assert len(sleeps) == 1
+
+
+def test_200_without_access_token_is_retried_then_succeeds():
+    session = FakeSession(
+        [
+            FakeResponse(200, {"device_id": "DEV"}),
+            FakeResponse(200, {"access_token": "tok"}),
+        ]
+    )
+    sleeps = []
+
+    result = asyncio.run(
+        post_login_with_retry(
+            session, "https://mas", {}, max_attempts=3, sleep=make_sleep(sleeps)
+        )
+    )
+
+    assert result == {"access_token": "tok"}
+    assert len(session.calls) == 2
+    assert len(sleeps) == 1
+
+
+def test_200_without_access_token_exhausts_retries_as_transient():
+    session = FakeSession([FakeResponse(200, {"device_id": "DEV"})] * 2)
+    sleeps = []
+
+    with pytest.raises(MasLoginError) as excinfo:
+        asyncio.run(
+            post_login_with_retry(
+                session, "https://mas", {}, max_attempts=2, sleep=make_sleep(sleeps)
+            )
+        )
+
+    assert not isinstance(excinfo.value, MasLoginPermanentError)
+    assert "access_token" in str(excinfo.value)
+    assert len(session.calls) == 2
+    assert len(sleeps) == 1
+
+
+def test_retry_after_header_is_honoured():
+    session = FakeSession(
+        [
+            FakeResponse(503, text_body="busy", headers={"Retry-After": "7"}),
+            FakeResponse(200, {"access_token": "tok"}),
+        ]
+    )
+    sleeps = []
+
+    result = asyncio.run(
+        post_login_with_retry(
+            session,
+            "https://mas",
+            {},
+            max_attempts=3,
+            base_delay=1.0,
+            max_delay=60.0,
+            sleep=make_sleep(sleeps),
+            rand=lambda: 0.5,
+        )
+    )
+
+    assert result == {"access_token": "tok"}
+    assert sleeps == [7.0]
+
+
+def test_retry_after_header_is_capped_at_max_delay():
+    session = FakeSession(
+        [
+            FakeResponse(503, text_body="busy", headers={"Retry-After": "999"}),
+            FakeResponse(200, {"access_token": "tok"}),
+        ]
+    )
+    sleeps = []
+
+    result = asyncio.run(
+        post_login_with_retry(
+            session,
+            "https://mas",
+            {},
+            max_attempts=3,
+            base_delay=1.0,
+            max_delay=5.0,
+            sleep=make_sleep(sleeps),
+        )
+    )
+
+    assert result == {"access_token": "tok"}
+    assert sleeps == [5.0]
+
+
+def test_invalid_max_attempts_raises():
+    session = FakeSession([])
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            post_login_with_retry(session, "https://mas", {}, max_attempts=0)
+        )
+
+    assert session.calls == []
+
+
+def test_invalid_timeout_raises():
+    session = FakeSession([])
+
+    with pytest.raises(ValueError):
+        asyncio.run(post_login_with_retry(session, "https://mas", {}, timeout=0))
+
+    assert session.calls == []
