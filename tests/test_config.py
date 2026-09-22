@@ -54,3 +54,21 @@ def test_invalid_login_retry_value_raises(monkeypatch):
 
     with pytest.raises(ValueError):
         Config.from_env()
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_max_attempts_below_one_raises(monkeypatch, value):
+    set_required(monkeypatch)
+    monkeypatch.setenv("MAS_LOGIN_MAX_ATTEMPTS", value)
+
+    with pytest.raises(ValueError):
+        Config.from_env()
+
+
+@pytest.mark.parametrize("name", ["MAS_LOGIN_BASE_DELAY", "MAS_LOGIN_MAX_DELAY"])
+def test_negative_delay_raises(monkeypatch, name):
+    set_required(monkeypatch)
+    monkeypatch.setenv(name, "-0.5")
+
+    with pytest.raises(ValueError):
+        Config.from_env()

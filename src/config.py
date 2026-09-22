@@ -22,6 +22,20 @@ def _env_float(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a number, got {raw!r}")
 
 
+def _env_int_min(name: str, default: int, minimum: int) -> int:
+    value = _env_int(name, default)
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    return value
+
+
+def _env_float_min(name: str, default: float, minimum: float) -> float:
+    value = _env_float(name, default)
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    return value
+
+
 @dataclass
 class Config:
     homeserver: str
@@ -66,8 +80,8 @@ class Config:
             store_path=os.environ.get("STORE_PATH", "./store"),
             recovery_key=os.environ.get("MATRIX_RECOVERY_KEY"),
             mas_url=mas_url,
-            mas_login_max_attempts=_env_int("MAS_LOGIN_MAX_ATTEMPTS", 10),
-            mas_login_base_delay=_env_float("MAS_LOGIN_BASE_DELAY", 1.0),
-            mas_login_max_delay=_env_float("MAS_LOGIN_MAX_DELAY", 60.0),
-            mas_login_timeout=_env_float("MAS_LOGIN_TIMEOUT", 30.0),
+            mas_login_max_attempts=_env_int_min("MAS_LOGIN_MAX_ATTEMPTS", 10, 1),
+            mas_login_base_delay=_env_float_min("MAS_LOGIN_BASE_DELAY", 1.0, 0.0),
+            mas_login_max_delay=_env_float_min("MAS_LOGIN_MAX_DELAY", 60.0, 0.0),
+            mas_login_timeout=_env_float_min("MAS_LOGIN_TIMEOUT", 30.0, 0.0),
         )

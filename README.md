@@ -102,12 +102,12 @@ This bot works with **any OpenAI Whisper-compatible API**. Just point `PARAKEET_
 | `MATRIX_DEVICE_ID`  | No       | Auto      | Device ID for session persistence |
 | `PARAKEET_URL`      | Yes      | —         | Whisper-compatible API base URL   |
 | `STORE_PATH`        | No       | `./store` | Path for E2EE key storage         |
-| `MAS_LOGIN_MAX_ATTEMPTS` | No  | `10`      | Max MAS login attempts at startup (transient 5xx/404/429/408 and network errors are retried with exponential backoff + jitter) |
-| `MAS_LOGIN_BASE_DELAY` | No     | `1.0`     | Initial retry delay in seconds    |
-| `MAS_LOGIN_MAX_DELAY` | No      | `60.0`    | Maximum retry delay in seconds    |
-| `MAS_LOGIN_TIMEOUT` | No        | `30.0`    | Per-request timeout in seconds    |
+| `MAS_LOGIN_MAX_ATTEMPTS` | No  | `10`      | Max MAS login attempts at startup, `>= 1` (transient 5xx/404/429/408, malformed 200 bodies and network errors are retried with exponential backoff + jitter) |
+| `MAS_LOGIN_BASE_DELAY` | No     | `1.0`     | Initial retry delay in seconds, `>= 0` |
+| `MAS_LOGIN_MAX_DELAY` | No      | `60.0`    | Maximum retry delay in seconds, `>= 0` |
+| `MAS_LOGIN_TIMEOUT` | No        | `30.0`    | Per-request timeout in seconds, `>= 0` |
 
-A permanently rejected login (e.g. wrong password, HTTP 401/403) fails immediately and the process exits non-zero, so the container restart policy can recover it instead of leaving a silently dead bot.
+A permanently rejected login (e.g. wrong password, HTTP 401/403) fails immediately. A malformed 200 body (non-JSON, or missing `access_token`) is treated as transient and consumes the retry budget. Any login failure at startup — exhausted retries or an unexpected error — exits non-zero, so the container restart policy can recover it instead of leaving a silently dead bot.
 
 ## How It Works
 
