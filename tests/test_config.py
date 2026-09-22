@@ -72,3 +72,12 @@ def test_negative_delay_raises(monkeypatch, name):
 
     with pytest.raises(ValueError):
         Config.from_env()
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_non_positive_timeout_raises(monkeypatch, value):
+    set_required(monkeypatch)
+    monkeypatch.setenv("MAS_LOGIN_TIMEOUT", value)
+
+    with pytest.raises(ValueError):
+        Config.from_env()

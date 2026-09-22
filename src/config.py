@@ -36,6 +36,13 @@ def _env_float_min(name: str, default: float, minimum: float) -> float:
     return value
 
 
+def _env_float_positive(name: str, default: float) -> float:
+    value = _env_float(name, default)
+    if value <= 0:
+        raise ValueError(f"{name} must be > 0, got {value!r}")
+    return value
+
+
 @dataclass
 class Config:
     homeserver: str
@@ -83,5 +90,5 @@ class Config:
             mas_login_max_attempts=_env_int_min("MAS_LOGIN_MAX_ATTEMPTS", 10, 1),
             mas_login_base_delay=_env_float_min("MAS_LOGIN_BASE_DELAY", 1.0, 0.0),
             mas_login_max_delay=_env_float_min("MAS_LOGIN_MAX_DELAY", 60.0, 0.0),
-            mas_login_timeout=_env_float_min("MAS_LOGIN_TIMEOUT", 30.0, 0.0),
+            mas_login_timeout=_env_float_positive("MAS_LOGIN_TIMEOUT", 30.0),
         )
