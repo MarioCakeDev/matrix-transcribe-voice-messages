@@ -2,6 +2,26 @@ import os
 from dataclasses import dataclass
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got {raw!r}")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number, got {raw!r}")
+
+
 @dataclass
 class Config:
     homeserver: str
@@ -12,6 +32,10 @@ class Config:
     store_path: str
     recovery_key: str | None
     mas_url: str | None
+    mas_login_max_attempts: int = 10
+    mas_login_base_delay: float = 1.0
+    mas_login_max_delay: float = 60.0
+    mas_login_timeout: float = 30.0
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -42,4 +66,8 @@ class Config:
             store_path=os.environ.get("STORE_PATH", "./store"),
             recovery_key=os.environ.get("MATRIX_RECOVERY_KEY"),
             mas_url=mas_url,
+            mas_login_max_attempts=_env_int("MAS_LOGIN_MAX_ATTEMPTS", 10),
+            mas_login_base_delay=_env_float("MAS_LOGIN_BASE_DELAY", 1.0),
+            mas_login_max_delay=_env_float("MAS_LOGIN_MAX_DELAY", 60.0),
+            mas_login_timeout=_env_float("MAS_LOGIN_TIMEOUT", 30.0),
         )

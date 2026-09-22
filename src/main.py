@@ -13,12 +13,19 @@ from mautrix.types import EventType, LoginType, MatrixUserIdentifier, Membership
 from mautrix.util.async_db import Database
 
 from src.config import Config
+from src.mas_login import MasLoginError, post_login_with_retry
 from src.matrix_client import MatrixTranscribeBot
 from src.transcriber import Transcriber
 
 logger = logging.getLogger(__name__)
 
 DEVICE_ID_FILE = "device_id"
+
+
+def _fail_fast(reason: str) -> None:
+    logger.critical("Fatal: %s", reason)
+    logging.shutdown()
+    os._exit(1)
 
 
 async def main():
@@ -70,13 +77,18 @@ async def main():
         if device_id:
             login_payload["device_id"] = device_id
 
-        async with session.post(
-            f"{mas_url}/_matrix/client/v3/login", json=login_payload
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(f"MAS login failed ({resp.status}): {body}")
-            login_data = await resp.json()
+        try:
+            login_data = await post_login_with_retry(
+                session,
+                mas_url,
+                login_payload,
+                max_attempts=config.mas_login_max_attempts,
+                base_delay=config.mas_login_base_delay,
+                max_delay=config.mas_login_max_delay,
+                timeout=config.mas_login_timeout,
+            )
+        except MasLoginError as exc:
+            _fail_fast(f"MAS login failed after retries: {exc}")
 
     access_token = login_data["access_token"]
     device_id = login_data.get("device_id")
