@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import random
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import aiohttp
 
@@ -39,6 +39,7 @@ async def post_login_with_retry(
     base_delay: float = 1.0,
     max_delay: float = 60.0,
     timeout: float = 30.0,
+    on_retry: Callable[[int, BaseException], None] | None = None,
     sleep=asyncio.sleep,
     rand=random.random,
 ) -> dict[str, Any]:
@@ -94,6 +95,8 @@ async def post_login_with_retry(
             last_error,
             delay,
         )
+        if on_retry is not None:
+            on_retry(attempt, last_error)
         await sleep(delay)
 
     raise last_error or MasLoginError("MAS login failed")

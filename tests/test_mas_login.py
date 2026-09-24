@@ -105,6 +105,37 @@ def test_retries_transient_503_then_succeeds():
     assert sleeps == [0.75, 1.5]
 
 
+def test_on_retry_callback_receives_attempt_and_error():
+    session = FakeSession(
+        [
+            FakeResponse(503, text_body="no available server"),
+            FakeResponse(503, text_body="still down"),
+            FakeResponse(200, {"access_token": "tok"}),
+        ]
+    )
+    sleeps = []
+    seen = []
+
+    def on_retry(attempt, exc):
+        seen.append((attempt, type(exc).__name__))
+
+    result = asyncio.run(
+        post_login_with_retry(
+            session,
+            "https://mas",
+            {},
+            max_attempts=5,
+            sleep=make_sleep(sleeps),
+            rand=lambda: 0.5,
+            on_retry=on_retry,
+        )
+    )
+
+    assert result == {"access_token": "tok"}
+    assert seen == [(1, "MasLoginError"), (2, "MasLoginError")]
+    assert len(sleeps) == len(seen)
+
+
 def test_404_is_retried_then_succeeds():
     session = FakeSession(
         [
