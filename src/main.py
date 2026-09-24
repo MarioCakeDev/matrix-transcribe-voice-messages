@@ -13,9 +13,12 @@ from mautrix.crypto.store import PgCryptoStore, PgCryptoStateStore
 from mautrix.types import EventType, LoginType, MatrixUserIdentifier, Membership
 from mautrix.util.async_db import Database
 
+from src import health
 from src.config import Config
 from src.mas_login import post_login_with_retry
 from src.matrix_client import MatrixTranscribeBot
+from src.retry import retry_async
+from src.sync_supervisor import run_sync_forever
 from src.transcriber import Transcriber
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,12 @@ async def main():
 
     config = Config.from_env()
     transcriber = Transcriber(config.parakeet_url)
+
+    # Liveness heartbeat: touched on startup, login retries and every successful
+    # sync. The Docker HEALTHCHECK (`python -m src.health --check`) goes stale
+    # when the sync loop stops making progress.
+    heartbeat_file = health.heartbeat_path(config.store_path)
+    health.write_beat(heartbeat_file)
 
     db = Database.create(
         f"sqlite:{config.store_path}/crypto.db",
@@ -87,6 +96,7 @@ async def main():
                 base_delay=config.mas_login_base_delay,
                 max_delay=config.mas_login_max_delay,
                 timeout=config.mas_login_timeout,
+                on_retry=lambda *_: health.write_beat(heartbeat_file),
             )
             access_token = login_data["access_token"]
         except Exception as exc:
@@ -113,7 +123,20 @@ async def main():
     await crypto.load()
     client.crypto = crypto
 
-    await crypto.share_keys()
+    # Synapse may still be booting when we get here; retry key sharing with the
+    # same backoff budget as the login, then fail loud so the restart policy
+    # reaps a container that cannot connect.
+    try:
+        await retry_async(
+            crypto.share_keys,
+            max_attempts=config.mas_login_max_attempts,
+            base_delay=config.mas_login_base_delay,
+            max_delay=config.mas_login_max_delay,
+            description="Synapse key sharing",
+            on_retry=lambda *_: health.write_beat(heartbeat_file),
+        )
+    except Exception as exc:
+        _fail_fast(f"Synapse key sharing failed after retries: {exc!r}")
 
     if config.recovery_key:
         try:
@@ -138,9 +161,20 @@ async def main():
             except Exception:
                 logger.exception("Failed to join room %s", evt.room_id)
 
+    @client.on(InternalEventType.SYNC_STARTED)
+    async def on_sync_started(_data):
+        health.write_beat(heartbeat_file)
+
+    @client.on(InternalEventType.SYNC_SUCCESSFUL)
+    async def on_sync_successful(_data):
+        health.write_beat(heartbeat_file)
+
     stop_event = asyncio.Event()
+    stopping = False
 
     def handle_signal():
+        nonlocal stopping
+        stopping = True
         stop_event.set()
 
     loop = asyncio.get_event_loop()
@@ -149,13 +183,16 @@ async def main():
 
     logger.info("Bot started. Listening for voice messages...")
 
-    sync_task = asyncio.ensure_future(client.start(None))
+    sync_task = asyncio.ensure_future(run_sync_forever(client, lambda: stopping))
 
     await stop_event.wait()
     client.stop()
 
     logger.info("Shutting down...")
-    await sync_task
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
     await db.stop()
 
 
