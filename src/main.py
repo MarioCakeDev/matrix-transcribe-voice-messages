@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 DEVICE_ID_FILE = "device_id"
 
+# Grace given to the sync loop to return after `client.stop()` before it is
+# cancelled. Covers the case where the signal lands while the supervisor is in
+# its reconnect backoff (up to `max_delay`), which `client.stop()` cannot
+# interrupt. Kept below Docker's default 10s stop grace so a clean `db.stop()`
+# still runs before SIGKILL.
+SHUTDOWN_GRACE_SECONDS = 5.0
+
 
 def _fail_fast(reason: str) -> NoReturn:
     logger.critical("Fatal: %s", reason)
@@ -189,6 +196,12 @@ async def main():
     client.stop()
 
     logger.info("Shutting down...")
+    done, _ = await asyncio.wait({sync_task}, timeout=SHUTDOWN_GRACE_SECONDS)
+    if not done:
+        logger.warning(
+            "Sync loop did not stop within %.0fs; cancelling", SHUTDOWN_GRACE_SECONDS
+        )
+        sync_task.cancel()
     try:
         await sync_task
     except asyncio.CancelledError:
