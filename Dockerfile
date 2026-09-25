@@ -19,4 +19,7 @@ COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY src/ src/
 
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+    CMD ["python", "-m", "src.health", "--check"]
+
 CMD ["python", "-m", "src.main"]

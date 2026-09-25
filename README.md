@@ -28,6 +28,7 @@ This is a fork of [florianherrengt/matrix-transcribe-voice-messages](https://git
 - **Notice replies** — transcriptions are sent as `m.notice` instead of `m.text` to prevent bridges (e.g., Signal) from re-bridging bot messages back to the upstream platform.
 - **Device ID persistence** — saves `device_id` to a file to maintain E2EE crypto state across restarts.
 - **Comprehensive logging** — detailed logs for message detection, download, decryption, and transcription debugging.
+- **Crash-resilient startup** — MAS login and Synapse key sharing retry with bounded exponential backoff + jitter, fail loud (exit non-zero) when exhausted, and the sync loop is restarted if it ever ends. A liveness heartbeat plus `HEALTHCHECK` makes a hung sync visible as `unhealthy` instead of a silently dead `Up` container.
 - **Fixed missing dependencies** — adds `unpaddedbase64`, `pycryptodome`, `base58`, `aiosqlite`, `python-olm` that cause `ModuleNotFoundError` on startup in the original.
 
 **All changes in this fork were generated entirely by AI (opencode) and not reviewed by a human.** The AI only implemented what was requested by the user.
@@ -102,6 +103,23 @@ This bot works with **any OpenAI Whisper-compatible API**. Just point `PARAKEET_
 | `MATRIX_DEVICE_ID`  | No       | Auto      | Device ID for session persistence |
 | `PARAKEET_URL`      | Yes      | —         | Whisper-compatible API base URL   |
 | `STORE_PATH`        | No       | `./store` | Path for E2EE key storage         |
+| `MAS_LOGIN_MAX_ATTEMPTS` | No  | `10`      | Max MAS login attempts at startup, `>= 1` (transient 5xx/404/429/408, malformed 200 bodies and network errors are retried with exponential backoff + jitter) |
+| `MAS_LOGIN_BASE_DELAY` | No     | `1.0`     | Initial retry delay in seconds, `>= 0` |
+| `MAS_LOGIN_MAX_DELAY` | No      | `60.0`    | Maximum retry delay in seconds, `>= 0` |
+| `MAS_LOGIN_TIMEOUT` | No        | `30.0`    | Per-request timeout in seconds, `> 0` |
+| `HEALTH_MAX_AGE`    | No       | `120`     | Max seconds since the last sync heartbeat before the container reports unhealthy |
+
+A permanently rejected login (e.g. wrong password, HTTP 401/403) fails immediately. A malformed 200 body (non-JSON, or missing `access_token`) is treated as transient and consumes the retry budget. Any login failure at startup — exhausted retries or an unexpected error — exits non-zero, so the container restart policy can recover it instead of leaving a silently dead bot.
+
+### Health & self-healing
+
+The bot touches a heartbeat file (`$STORE_PATH/sync_heartbeat`, default `/app/store/sync_heartbeat`) at startup, on every MAS login retry, and on every successful sync. The image ships a Docker `HEALTHCHECK` that runs `python -m src.health --check`:
+
+- **0** — heartbeat is fresh (healthy)
+- **1** — heartbeat missing or older than `HEALTH_MAX_AGE` (a hung sync loop)
+- **2** — bad arguments/environment
+
+Because a hung process stops beating, `docker ps` shows it as `unhealthy` instead of a misleading `Up`. Docker's `unless-stopped` policy does **not** restart unhealthy containers on its own, so to actually self-heal, run an autoheal sidecar (e.g. [`willfarrell/autoheal`](https://github.com/willfarrell/autoheal)) against this container, or configure the equivalent in Coolify. On Coolify: the Dockerfile `HEALTHCHECK` is picked up automatically (recreate the container after deploying the new image); if you prefer Coolify-managed checks, set a healthcheck on the `matrix-transcription` service pointing at `python -m src.health --check` and enable auto-restart on unhealthy.
 
 ## How It Works
 
@@ -144,6 +162,10 @@ Built with [matrix-nio](https://github.com/matrix-nio/matrix-nio), the most matu
 src/
 ├── main.py          # Entry point, MAS login, sync loop, E2EE setup, auto-join
 ├── config.py        # Environment variable configuration (includes MAS URL)
+├── mas_login.py     # MAS login with bounded retry/backoff and fail-fast
+├── retry.py         # Generic async retry helper (backoff + jitter)
+├── sync_supervisor.py # Restarts the sync loop if it ever ends
+├── health.py        # Liveness heartbeat + `--check` entrypoint
 ├── matrix_client.py # Voice detection, download, decrypt, E2EE media, reply
 └── transcriber.py   # Whisper API client
 ```
