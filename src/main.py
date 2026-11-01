@@ -15,8 +15,11 @@ from mautrix.util.async_db import Database
 
 from src import health
 from src.config import Config
+from src.decrypt_monitor import install_decrypt_failure_logging
+from src.device_keys import ensure_device_keys
 from src.mas_login import post_login_with_retry
 from src.matrix_client import MatrixTranscribeBot
+from src.processed import ProcessedStore, database_path
 from src.retry import retry_async
 from src.sync_supervisor import run_sync_forever
 from src.transcriber import Transcriber
@@ -54,7 +57,9 @@ async def main():
     # sync. The Docker HEALTHCHECK (`python -m src.health --check`) goes stale
     # when the sync loop stops making progress.
     heartbeat_file = health.heartbeat_path(config.store_path)
+    state_file = health.state_path(config.store_path)
     health.write_beat(heartbeat_file)
+    health.write_state(state_file, recovery_key_configured=bool(config.recovery_key))
 
     db = Database.create(
         f"sqlite:{config.store_path}/crypto.db",
@@ -69,6 +74,23 @@ async def main():
         db=db,
     )
     await crypto_store.open()
+
+    # Prime the store's cached sync token and device id *before* anything writes
+    # the account back. PgCryptoStore.put_account() persists `sync_token` from
+    # its in-memory cache, and OlmMachine.load() never populates that cache — so
+    # an unprimed share_keys() (which calls put_account) blanked the persisted
+    # sync token on every start. A blank token means an initial sync, and an
+    # initial sync replays the rooms' recent timeline: that is why a restart
+    # re-transcribed voice messages that had already been answered.
+    primed_token = await crypto_store.get_next_batch()
+    await crypto_store.get_device_id()
+    if primed_token:
+        logger.info("Resuming from the persisted sync token %s", primed_token)
+    else:
+        logger.warning(
+            "No persisted sync token: this start performs an initial sync. The "
+            "processed-event store keeps that replay from transcribing anything twice."
+        )
 
     state_store = PgCryptoStateStore(db)
 
@@ -145,14 +167,70 @@ async def main():
     except Exception as exc:
         _fail_fast(f"Synapse key sharing failed after retries: {exc!r}")
 
+    # Repair the state that used to need a manual `UPDATE crypto_account SET
+    # shared=0`: published device keys that no longer match the local account
+    # mean every inbound room key is undecryptable.
+    try:
+        key_status = await ensure_device_keys(client, crypto, crypto_store)
+    except Exception:
+        logger.exception("Device-key repair failed; continuing (health will flag it)")
+        key_status = "unknown"
+    health.write_state(
+        state_file,
+        device_keys_ok=health.MISSING if key_status == "unknown" else True,
+    )
+    if key_status == "repaired":
+        logger.warning("Device keys were repaired at startup; rooms may need a moment to re-encrypt")
+
     if config.recovery_key:
         try:
             await crypto.verify_with_recovery_key(config.recovery_key)
             logger.info("Cross-signing verified via recovery key")
+            health.write_state(state_file, cross_signing_verified=True)
         except Exception:
-            logger.exception("Cross-signing verification failed")
+            logger.exception("Cross-signing verification with MATRIX_RECOVERY_KEY failed")
+            health.write_state(state_file, cross_signing_verified=False)
+    else:
+        # Loud on purpose: without a recovery key there is no key-backup path,
+        # so a lost device identity can only be repaired by re-publishing keys
+        # (and losing verification) rather than by restoring the backup.
+        logger.warning("=" * 78)
+        logger.warning("MATRIX_RECOVERY_KEY is NOT set: this bot has no key-backup path.")
+        logger.warning(
+            "If its device keys are lost, past room keys cannot be recovered and the "
+            "device must re-publish (unverified). Set MATRIX_RECOVERY_KEY to enable "
+            "cross-signing verification and key-backup recovery."
+        )
+        logger.warning("=" * 78)
+        health.write_state(state_file, cross_signing_verified=False)
 
-    bot = MatrixTranscribeBot(client, transcriber)
+    # Every undecryptable event is a potentially lost voice message, and mautrix
+    # drops them before any handler runs. Log room + event id and count them for
+    # the healthcheck instead of staying silently green.
+    install_decrypt_failure_logging(
+        crypto,
+        lambda room_id, event_id, _exc: health.record_decrypt_failure(
+            state_file, room_id, event_id
+        ),
+    )
+
+    processed = ProcessedStore(database_path(config.store_path)).open()
+    pruned = processed.prune(
+        max_age_days=config.processed_max_age_days, max_rows=config.processed_max_rows
+    )
+    logger.info(
+        "Processed-event store %s: %d record(s)%s",
+        processed.path,
+        processed.count(),
+        f", pruned {pruned}" if pruned else "",
+    )
+
+    bot = MatrixTranscribeBot(
+        client,
+        transcriber,
+        processed=processed,
+        health_state_path=state_file,
+    )
 
     @client.on(EventType.ROOM_MESSAGE)
     async def on_message(evt):
@@ -207,6 +285,7 @@ async def main():
     except asyncio.CancelledError:
         pass
     await db.stop()
+    processed.close()
 
 
 if __name__ == "__main__":

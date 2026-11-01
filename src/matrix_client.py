@@ -14,6 +14,8 @@ from mautrix.types import (
 if TYPE_CHECKING:
     from mautrix.client import Client
 
+from src.health import record_message, record_transcription
+from src.processed import STATUS_FAILED, ProcessedStore
 from src.transcriber import Transcriber
 
 logger = logging.getLogger(__name__)
@@ -29,13 +31,36 @@ def is_voice_message(content: MediaMessageEventContent) -> bool:
 
 
 class MatrixTranscribeBot:
-    def __init__(self, client: "Client", transcriber: Transcriber):
+    """Transcribe voice messages, exactly once each.
+
+    The daemon-level sync token can be lost (a crypto reset, or mautrix writing
+    a blank token when the account is saved before the token is read), and a
+    Matrix initial sync replays the recent timeline. *processed* is what keeps a
+    replay from producing a second transcription: claim before the download, and
+    record the outcome once the reply is on the wire.
+    """
+
+    def __init__(
+        self,
+        client: "Client",
+        transcriber: Transcriber,
+        *,
+        processed: ProcessedStore | None = None,
+        health_state_path: "os.PathLike | str | None" = None,
+    ):
         self.client = client
         self.transcriber = transcriber
+        self.processed = processed
+        self.health_state_path = health_state_path
 
     async def handle_message(self, event: MessageEvent) -> None:
         if event.sender == self.client.mxid:
             return
+
+        # Traffic signal for the healthcheck: messages are flowing, so "no
+        # transcription for N hours" becomes meaningful rather than idle.
+        if self.health_state_path is not None:
+            record_message(self.health_state_path)
 
         content = event.content
         raw = content.serialize() if hasattr(content, 'serialize') else {}
@@ -51,6 +76,19 @@ class MatrixTranscribeBot:
             return
 
         logger.info("Voice message detected in %s from %s", event.room_id, event.sender)
+
+        event_id = getattr(event, "event_id", "") or ""
+        # Durable dedupe: a restart (or a replayed initial-sync window) must not
+        # transcribe this event again. The row is written before any work so two
+        # concurrent deliveries of the same event cannot both start.
+        if self.processed is not None and event_id:
+            if not self.processed.claim(event_id, str(event.room_id)):
+                logger.info(
+                    "Skipping voice message %s in %s: already handled by an earlier run",
+                    event_id,
+                    event.room_id,
+                )
+                return
 
         raw = content.serialize()
 
@@ -81,6 +119,8 @@ class MatrixTranscribeBot:
                 logger.info("Decrypted %d bytes", len(audio_data))
         except Exception as e:
             logger.error("Failed to download/decrypt audio: %s", e)
+            if self.processed is not None and event_id:
+                self.processed.complete(event_id, status=STATUS_FAILED)
             await self._send_reply(event.room_id, f"Failed to download audio: {e}", event.event_id)
             return
 
@@ -90,16 +130,22 @@ class MatrixTranscribeBot:
             text = await self.transcriber.transcribe(audio_data, filename)
             logger.info("Transcription result: %s", text[:100] if text else "empty")
             await self._send_reply(event.room_id, f"Transcription:\n{text}", event.event_id)
+            if self.processed is not None:
+                self.processed.complete(event_id)
+            if self.health_state_path is not None:
+                record_transcription(self.health_state_path)
             logger.info("Reply sent to %s", event.room_id)
         except Exception as e:
             logger.error("Failed to transcribe/send: %s", e, exc_info=True)
+            if self.processed is not None:
+                self.processed.complete(event_id, status=STATUS_FAILED)
             try:
                 await self._send_reply(event.room_id, f"Failed to transcribe: {e}", event.event_id)
             except Exception:
                 logger.exception("Failed to send error reply")
 
-    async def _send_reply(self, room_id: str, text: str, reply_to_event_id: str) -> None:
-        await self.client.send_text(
+    async def _send_reply(self, room_id: str, text: str, reply_to_event_id: str):
+        return await self.client.send_text(
             room_id,
             text=text,
             msgtype=MessageType.NOTICE,
