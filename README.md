@@ -107,19 +107,90 @@ This bot works with **any OpenAI Whisper-compatible API**. Just point `PARAKEET_
 | `MAS_LOGIN_BASE_DELAY` | No     | `1.0`     | Initial retry delay in seconds, `>= 0` |
 | `MAS_LOGIN_MAX_DELAY` | No      | `60.0`    | Maximum retry delay in seconds, `>= 0` |
 | `MAS_LOGIN_TIMEOUT` | No        | `30.0`    | Per-request timeout in seconds, `> 0` |
+| `MATRIX_RECOVERY_KEY` | No     | —         | Recovery key used to restore cross-signing / room keys from key backup. **Set this.** Without it there is no key-backup path at all and a lost device identity can only be repaired by re-publishing unverified keys — the bot says so loudly at startup |
+| `PROCESSED_MAX_AGE_DAYS` | No  | `30`      | Dedupe records older than this are pruned, `>= 0` |
+| `PROCESSED_MAX_ROWS` | No      | `20000`   | Hard cap on dedupe rows; the oldest records are evicted first, `>= 1` |
 | `HEALTH_MAX_AGE`    | No       | `120`     | Max seconds since the last sync heartbeat before the container reports unhealthy |
+| `HEALTH_STALE_TRANSCRIBE_HOURS` | No | `6` | Hours without a transcription, while message traffic continues, before reporting unhealthy |
+| `HEALTH_DECRYPT_WINDOW_MINUTES` | No | `60` | Window over which undecryptable events are counted |
+| `HEALTH_DECRYPT_THRESHOLD` | No | `1` | Undecryptable events inside that window that make the bot unhealthy |
 
 A permanently rejected login (e.g. wrong password, HTTP 401/403) fails immediately. A malformed 200 body (non-JSON, or missing `access_token`) is treated as transient and consumes the retry budget. Any login failure at startup — exhausted retries or an unexpected error — exits non-zero, so the container restart policy can recover it instead of leaving a silently dead bot.
 
+### Exactly-once transcription
+
+Every voice message the bot handles is recorded in `$STORE_PATH/processed.db` (a
+small SQLite table, deliberately *separate* from `crypto.db` so it survives the
+crypto resets this bot has needed in the past):
+
+* the event id is **claimed before the download starts**, so a replay cannot be
+  transcribed twice;
+* the outcome (`replied` / `failed`) is written **after the reply is on the wire**;
+* a claim left behind by a crash is retried once it is older than 15 minutes, so
+  a hard kill does not lose a message;
+* records are pruned by age (`PROCESSED_MAX_AGE_DAYS`) and by row count
+  (`PROCESSED_MAX_ROWS`).
+
+This matters because a restart can legitimately replay the tail of a room. A
+Matrix *initial* sync returns the room's most recent messages, and the bot used
+to start with one on **every** start: `mautrix`'s `PgCryptoStore.put_account()`
+writes the `sync_token` column from an in-memory cache that `OlmMachine.load()`
+never fills, and `share_keys()` calls `put_account()` at startup — so the
+persisted sync token was blanked, and the replay re-transcribed old voice
+messages. `src.main` now reads the token **before** anything saves the account
+(`tests/test_sync_token.py`), and the processed-event store makes the replay
+harmless even if the token is lost again. Audio that genuinely arrived while the
+bot was down is newer than the last processed event, so it is still transcribed.
+
+### Automatic device-key repair
+
+`mautrix` only uploads a device's identity keys while `OlmAccount.shared` is
+`False`; `shared` is persisted as an "already published" flag. If the published
+keys stop matching the local Olm account (a recreated account, a device reset),
+the bot keeps uploading one-time keys only, every inbound room key becomes
+undecryptable, and the historical fix was a hand-run
+`UPDATE crypto_account SET shared = 0` plus a restart.
+
+At startup the bot now queries its own device keys (`/keys/query`) and compares
+them with the local account. On a mismatch it sets `shared = False`, saves the
+account and re-shares — the automated form of that manual reset — and logs the
+repair at `WARNING`. If `MATRIX_RECOVERY_KEY` is set, cross-signing is verified
+right after; if it is not set, the bot prints a loud warning that it has no
+key-backup path.
+
 ### Health & self-healing
 
-The bot touches a heartbeat file (`$STORE_PATH/sync_heartbeat`, default `/app/store/sync_heartbeat`) at startup, on every MAS login retry, and on every successful sync. The image ships a Docker `HEALTHCHECK` that runs `python -m src.health --check`:
+The bot touches a heartbeat file (`$STORE_PATH/sync_heartbeat`, default
+`/app/store/sync_heartbeat`) at startup, on every MAS login retry, and on every
+successful sync. It also maintains `$STORE_PATH/health_state.json`, which records
+traffic (`last_message_at`), work done (`last_transcription_at`), undecryptable
+events (room id + event id, bounded and decaying) and whether the published
+device keys matched. The image ships a Docker `HEALTHCHECK` that runs
+`python -m src.health --check`:
 
-- **0** — heartbeat is fresh (healthy)
-- **1** — heartbeat missing or older than `HEALTH_MAX_AGE` (a hung sync loop)
+- **0** — heartbeat fresh, device keys match, and no unanswered undecryptable
+  traffic (healthy)
+- **1** — unhealthy, with the reason on stderr: a stale heartbeat (hung sync
+  loop), `device_keys_ok: false`, undecryptable events inside
+  `HEALTH_DECRYPT_WINDOW_MINUTES` with no transcription since, or no
+  transcription for `HEALTH_STALE_TRANSCRIBE_HOURS` while messages kept flowing
 - **2** — bad arguments/environment
 
-Because a hung process stops beating, `docker ps` shows it as `unhealthy` instead of a misleading `Up`. Docker's `unless-stopped` policy does **not** restart unhealthy containers on its own, so to actually self-heal, run an autoheal sidecar (e.g. [`willfarrell/autoheal`](https://github.com/willfarrell/autoheal)) against this container, or configure the equivalent in Coolify. On Coolify: the Dockerfile `HEALTHCHECK` is picked up automatically (recreate the container after deploying the new image); if you prefer Coolify-managed checks, set a healthcheck on the `matrix-transcription` service pointing at `python -m src.health --check` and enable auto-restart on unhealthy.
+A bot that cannot decrypt — or that is syncing but transcribing nothing while
+messages arrive — therefore stops reporting `healthy`. Every undecryptable event
+is also logged at `ERROR` with its room id and event id, because `mautrix` drops
+those events before any handler runs and that log line is the only evidence that
+a voice message was lost; nothing is posted into the rooms.
+
+Because a hung process stops beating, `docker ps` shows it as `unhealthy` instead
+of a misleading `Up`. Docker's `unless-stopped` policy does **not** restart
+unhealthy containers on its own, so to actually self-heal, run an autoheal
+sidecar (e.g. [`willfarrell/autoheal`](https://github.com/willfarrell/autoheal))
+against this container, or configure the equivalent in Coolify. On Coolify: the
+Dockerfile `HEALTHCHECK` is picked up automatically (recreate the container after
+deploying the new image); if you prefer Coolify-managed checks, set a
+healthcheck on the `matrix-transcription` service pointing at
+`python -m src.health --check` and enable auto-restart on unhealthy.
 
 ## How It Works
 

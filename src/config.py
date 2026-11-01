@@ -57,6 +57,9 @@ class Config:
     mas_login_base_delay: float = 1.0
     mas_login_max_delay: float = 60.0
     mas_login_timeout: float = 30.0
+    # Bounded dedupe store (see src/processed.py).
+    processed_max_age_days: float = 30.0
+    processed_max_rows: int = 20000
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -91,4 +94,6 @@ class Config:
             mas_login_base_delay=_env_float_min("MAS_LOGIN_BASE_DELAY", 1.0, 0.0),
             mas_login_max_delay=_env_float_min("MAS_LOGIN_MAX_DELAY", 60.0, 0.0),
             mas_login_timeout=_env_float_positive("MAS_LOGIN_TIMEOUT", 30.0),
+            processed_max_age_days=_env_float_min("PROCESSED_MAX_AGE_DAYS", 30.0, 0.0),
+            processed_max_rows=_env_int_min("PROCESSED_MAX_ROWS", 20000, 1),
         )
